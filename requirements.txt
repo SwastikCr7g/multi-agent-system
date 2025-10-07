@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+google-generativeai
+pypdf
+sentence-transformers
+faiss-cpu
+ddgs
+feedparser
+certifi
+anyio
+python-multipart
+numpy
+
+
+
+

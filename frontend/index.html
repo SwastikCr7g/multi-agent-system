@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multi-Agent AI System - Dark Theme</title>
+    <style>
+        body {
+            background: linear-gradient(135deg, #1f1f2e, #282c34);
+            color: #cbd5e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 2em;
+        }
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: #2d2f3a;
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.9);
+        }
+        h1, h2 {
+            color: #e1e1ea;
+            font-weight: 600;
+            border-bottom: 1px solid #44475a;
+            padding-bottom: 0.5em;
+        }
+        .section {
+            border: 1px solid #44475a;
+            padding: 1.5em;
+            margin-top: 2em;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #3a3c4f, #242635);
+        }
+        textarea, input[type="file"]::file-selector-button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 0.5em;
+            background: #1e202f;
+            border: 1px solid #555;
+            border-radius: 8px;
+            color: #cbd5e0;
+            font-size: 1rem;
+            box-sizing: border-box;
+            resize: vertical;
+        }
+        pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            background-color: #282c34;
+            padding: 1em;
+            border-radius: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #d6deeb;
+            font-size: 0.95rem;
+        }
+        button {
+            margin-top: 1em;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #6e86d6, #4c5fd5);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-weight: 700;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.8);
+        }
+        .modal-content {
+            background-color: #1e202f;
+            margin: 10% auto;
+            padding: 25px;
+            border: 1px solid #44475a;
+            width: 85%;
+            max-width: 800px;
+            border-radius: 15px;
+            color: #cbd5e0;
+        }
+        .close {
+            color: #bbb;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #f87060;
+        }
+        #uploadStatus {
+            margin-top: 1em;
+            font-weight: bold;
+        }
+        strong {
+            color: #82aaff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Multi-Agent AI System</h1>
+
+        <!-- Log Viewer -->
+        <button onclick="showLogs()">View System Logs</button>
+        <div id="logModal" class="modal">
+            <div class="modal-content">
+                <span class="close" onclick="closeModal()">&times;</span>
+                <h2>System Logs</h2>
+                <pre id="logContent">Loading...</pre>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>General Query Agent</h2>
+            <p>Ask a question about current events, general knowledge, or academic papers.</p>
+            <textarea id="queryInput" rows="4" placeholder="e.g., what is the latest news about mars rover? Or find recent papers on transformer models"></textarea>
+            <button onclick="askQuery()">Ask Controller</button>
+
+            <div id="generalResultArea" style="margin-top: 1em; display: none;">
+                <p><strong>Agent Chosen:</strong> <span id="agentName"></span></p>
+                <pre id="generalAnswer"></pre>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Personal PDF Assistant</h2>
+            <p>Upload a PDF document to ask questions about its content.</p>
+            <input type="file" id="pdfFile" accept=".pdf">
+            <button onclick="uploadPdf()">Upload PDF</button>
+            <p id="uploadStatus"></p>
+            <hr style="border-color: #44475a; margin-top: 1.5em;">
+            <textarea id="pdfQueryInput" rows="4" placeholder="Ask a question about the uploaded PDF..."></textarea>
+            <button onclick="queryPdf()">Query PDF</button>
+            <pre id="pdfAnswer" style="margin-top: 1em; display: none;"></pre>
+        </div>
+    </div>
+
+    <script>
+        // Log Viewer Functions
+        async function showLogs() {
+            document.getElementById('logContent').textContent = 'Loading logs...';
+            document.getElementById('logModal').style.display = 'block';
+            try {
+                const response = await fetch('/logs');
+                const logText = await response.text();
+                document.getElementById('logContent').textContent = logText;
+            } catch (e) {
+                document.getElementById('logContent').textContent = 'Failed to load logs.';
+            }
+        }
+        function closeModal() {
+            document.getElementById('logModal').style.display = 'none';
+        }
+
+        // General Query Function
+        async function askQuery() {
+            const query = document.getElementById('queryInput').value;
+            const resultArea = document.getElementById('generalResultArea');
+            const agentNameSpan = document.getElementById('agentName');
+            const answerPre = document.getElementById('generalAnswer');
+
+            agentNameSpan.textContent = '...';
+            answerPre.textContent = 'Thinking...';
+            resultArea.style.display = 'block';
+
+            const response = await fetch('/ask', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query })
+            });
+            const data = await response.json();
+            agentNameSpan.textContent = data.agent;
+            answerPre.textContent = data.result;
+        }
+
+        // PDF Upload Function
+        async function uploadPdf() {
+            const fileInput = document.getElementById('pdfFile');
+            const uploadStatus = document.getElementById('uploadStatus');
+            if (fileInput.files.length === 0) {
+                uploadStatus.textContent = 'Please select a file first.';
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            uploadStatus.textContent = 'Uploading...';
+            try {
+                const response = await fetch('/pdf-upload', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (response.ok) {
+                    uploadStatus.textContent = `Success: ${data.status}`;
+                } else {
+                    uploadStatus.textContent = `Error: ${data.detail}`;
+                }
+            } catch (e) {
+                uploadStatus.textContent = 'An unexpected error occurred during upload.';
+            }
+        }
+
+        // PDF Query Function
+        async function queryPdf() {
+            const question = document.getElementById('pdfQueryInput').value;
+            const answerPre = document.getElementById('pdfAnswer');
+
+            answerPre.textContent = 'Searching PDF...';
+            answerPre.style.display = 'block';
+
+            const formData = new FormData();
+            formData.append('question', question);
+            const response = await fetch('/query-pdf', { method: 'POST', body: formData });
+            const data = await response.json();
+            answerPre.textContent = data.answer;
+        }
+
+        // Close modal if user clicks outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('logModal');
+            if (event.target == modal) {
+                modal.style.display = "none";
+            }
+        }
+    </script>
+</body>
+</html>
