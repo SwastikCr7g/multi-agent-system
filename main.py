@@ -1,175 +1,140 @@
 import os
-import google.generativeai as genai
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, PlainTextResponse
-from dotenv import load_dotenv
 import logging
-from logging.handlers import RotatingFileHandler
-from typing import Dict, Any, List
+import shutil
+import time
 from pathlib import Path
-import json # Used for error logging
+from typing import Dict
 
-# Local imports
-from .schemas import AskRequest
-from .agents.controller import ControllerAgent
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from dotenv import load_dotenv
+from google import genai
+from pydantic import BaseModel
+
+# Local agent imports
 from .agents.pdf_rag import PDFRAGAgent
 from .agents.web_search import WebSearchAgent
 from .agents.arxiv_agent import ArxivAgent
 
-# --- PATH AND LOGGING SETUP ---
+# 1. Setup Environment
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_ROOT / "logs"
-
-os.makedirs(LOG_DIR, exist_ok=True)
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_file = LOG_DIR / "agent_system.log"
-file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5)
-file_handler.setFormatter(log_formatter)
-logger = logging.getLogger("AgentSystemLogger")
-logger.setLevel(logging.INFO)
-logger.addHandler(file_handler)
-
 load_dotenv(PROJECT_ROOT / ".env")
-app = FastAPI(title="Multi-Agent AI System")
 
-# --- Agent Initialization ---
-llm_model = None
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("AgentSystemLogger")
+
+app = FastAPI(title="Neo-Aether Multi-Agent System")
+
+# 2. Configuration (2026 Free Tier)
+MODEL_ID = "gemini-2.0-flash"
+client = None
+
+
+class AskRequest(BaseModel):
+    query: str
+
+
+class ControllerAgent:
+    def __init__(self, client, model):
+        self.client = client
+        self.model = model
+
+    def route_query(self, query: str) -> str:
+        prompt = f"Route to: PDFRAGAgent, WebSearchAgent, ArxivAgent, or SynthesisOnly. Query: {query}. Return ONLY the name."
+        try:
+            response = self.client.models.generate_content(model=self.model, contents=prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.warning(f"Router hit a limit or error: {e}")
+            return "WebSearchAgent"
+
+
+# Initialize Client WITHOUT the startup ping to save your quota
 try:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY environment variable not found.")
+        raise ValueError("GEMINI_API_KEY missing in .env")
 
-    genai.configure(api_key=api_key)
-    llm_model = genai.GenerativeModel('gemini-flash-latest')
-    logger.info("Central Gemini LLM model initialized successfully.")
+    client = genai.Client(api_key=api_key)
 
+    # We skip the "ping" generate_content call here to prevent 429 errors
+    # every time the uvicorn server reloads during development.
+    logger.info(f"🚀 SYSTEM READY: Model {MODEL_ID} initialized (Ping skipped to save quota)")
+
+    # Initialize Agents
+    controller = ControllerAgent(client, MODEL_ID)
+    pdf_agent = PDFRAGAgent(client, MODEL_ID)
+    web_agent = WebSearchAgent(client, MODEL_ID)
+    arxiv_agent = ArxivAgent(client, MODEL_ID)
 except Exception as e:
-    logger.critical(f"FATAL: Failed to initialize Gemini LLM model: {e}")
+    logger.critical(f"❌ Initialization Failed: {e}")
+    client = None
 
-if llm_model:
-    controller = ControllerAgent(llm_instance=llm_model)
-    pdf_agent = PDFRAGAgent(llm_instance=llm_model)
-    web_agent = WebSearchAgent(llm_instance=llm_model)
-    arxiv_agent = ArxivAgent(llm_instance=llm_model)
-    logger.info("All agents initialized with shared LLM instance.")
-else:
-    logger.critical("FATAL: Application cannot run without LLM model.")
-    controller, pdf_agent, web_agent, arxiv_agent = None, None, None, None
-
-# --- Frontend and API Endpoints ---
-app.mount("/frontend", StaticFiles(directory=PROJECT_ROOT / "frontend"), name="frontend")
+# 3. Routes
+app.mount("/frontend", StaticFiles(directory=str(PROJECT_ROOT / "frontend")), name="frontend")
 
 
 @app.get("/")
 async def read_index():
-    return FileResponse(PROJECT_ROOT / "frontend" / "index.html")
-
-
-# --- FINAL ROUTING FIX: HARDCODED KEYWORD CHECK ---
-def determine_fixed_agent(query: str) -> str | None:
-    """Checks for definitive keywords that mandate a specific agent (overriding LLM)."""
-    query_lower = query.lower()
-
-    # **CRITICAL FIX:** Force ArxivAgent for research-related terms.
-    arxiv_keywords = ['paper', 'research', 'arxiv', 'study', 'abstracts']
-    if any(keyword in query_lower for keyword in arxiv_keywords):
-        return "ArxivAgent"
-
-    # Secondary check for PDF/RAG terms (if user could query PDF via /ask)
-    pdf_keywords = ['document', 'uploaded file', 'this pdf', 'file content']
-    if any(keyword in query_lower for keyword in pdf_keywords):
-        return "PDFRAGAgent"
-
-    return None
-
-
-@app.post("/ask")
-async def ask(request: AskRequest) -> Dict[str, str]:
-    logger.info(f"Received new query: '{request.query}'")
-    if not controller:
-        raise HTTPException(status_code=503, detail="LLM service is not available.")
-
-    # 1. PRE-ROUTING: Check hardcoded rules FIRST (Solves the primary routing issue)
-    fixed_agent = determine_fixed_agent(request.query)
-
-    if fixed_agent:
-        chosen_agent = fixed_agent
-        # Rationale confirms the rule was used (kept for logging/traceability)
-        rationale_detail = f"RULE: Forced to {fixed_agent[:-5]} Agent (Keyword Match)"
-    else:
-        # 2. LLM ROUTING: Only if no hard rule applies
-        llm_choice = controller.route_query(request.query)
-        chosen_agent = llm_choice
-        rationale_detail = f"LLM ROUTED: {llm_choice}"
-
-    logger.info(f"Controller chose agent: '{chosen_agent}' (Rule or LLM).")
-
-    result = "Error: Agent processing failed."
-
-    # 3. Execution
-    if "PDFRAGAgent" in chosen_agent:
-        result = "This query seems to be about a document. Please use the 'Personal PDF Assistant' section."
-        display_agent_name = "PDFRAGAgent" # Set clean name
-    elif "WebSearchAgent" in chosen_agent:
-        result = web_agent.search(request.query)
-        display_agent_name = "WebSearchAgent" # Set clean name
-    elif "ArxivAgent" in chosen_agent:
-        result = arxiv_agent.fetch_papers(request.query)
-        display_agent_name = "ArxivAgent" # Set clean name
-    else:
-        # Fallback for SynthesisOnly or unexpected choice
-        chosen_agent = "SynthesisOnly"
-        display_agent_name = "SynthesisOnly" # Set clean name
-        try:
-            response = controller.llm.generate_content(f"Answer the user query: {request.query}")
-            result = response.text
-        except Exception as e:
-            result = f"Synthesis failed: {str(e)}"
-
-    # 4. Final Response
-    # The 'display_agent_name' is now guaranteed to be a simple, clean string
-    logger.info(f"Agent '{chosen_agent}' produced the following result: {result[:100]}...")
-    return {"agent": display_agent_name, "result": result}
-
-
-# --- LOGS, UPLOAD, QUERY ENDPOINTS (rest of main.py remains the same) ---
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs():
-    try:
-        with open(log_file, "r") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "Log file not found."
-    except Exception as e:
-        return f"An error occurred while reading the log file: {str(e)}"
+    return FileResponse(str(PROJECT_ROOT / "frontend" / "index.html"))
 
 
 @app.post("/pdf-upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    # Security check is intentionally kept minimal here.
-    if not pdf_agent: raise HTTPException(status_code=503, detail="PDF service is not available.")
-    if not file.filename.endswith('.pdf'): raise HTTPException(status_code=400, detail="Invalid file type.")
+    if not client: raise HTTPException(status_code=503, detail="AI Offline")
 
-    save_path = LOG_DIR / file.filename
+    temp_dir = PROJECT_ROOT / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    file_path = temp_dir / file.filename
 
     try:
-        with open(save_path, "wb") as f:
-            f.write(await file.read())
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-        if pdf_agent.process_pdf(str(save_path)):
-            return {"filename": file.filename, "status": "PDF processed successfully."}
+        success = pdf_agent.process_pdf(str(file_path))
+        return {"message": "Document ingested successfully."} if success else {"message": "Processing failed."}
+    finally:
+        if file_path.exists():
+            os.remove(file_path)
+
+
+@app.post("/ask")
+async def ask(request: AskRequest) -> Dict[str, str]:
+    if not client:
+        raise HTTPException(status_code=503, detail="AI Service Offline. Check API Key.")
+
+    q_lower = request.query.lower()
+
+    # 1. Deterministic Routing (Saves API calls/Quota)
+    if any(k in q_lower for k in ['pdf', 'document', 'file']):
+        chosen_agent = "PDFRAGAgent"
+    elif any(k in q_lower for k in ['arxiv', 'paper', 'research']):
+        chosen_agent = "ArxivAgent"
+    else:
+        # Only call the LLM to route if keywords aren't found
+        chosen_agent = controller.route_query(request.query)
+
+    display_name = chosen_agent.replace("Agent", "")
+
+    try:
+        # 2. Execution Logic
+        if "PDFRAG" in chosen_agent:
+            result = pdf_agent.query_pdf(request.query) if pdf_agent.index else "Please upload a PDF first."
+        elif "WebSearch" in chosen_agent:
+            result = web_agent.search(request.query)
+        elif "Arxiv" in chosen_agent:
+            result = arxiv_agent.fetch_papers(request.query)
         else:
-            raise HTTPException(status_code=500, detail="Failed to process PDF.")
+            display_name = "Ignis (General AI)"
+            resp = client.models.generate_content(model=MODEL_ID, contents=request.query)
+            result = resp.text
+
     except Exception as e:
-        logger.error(f"Upload error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if "429" in str(e):
+            result = "The AI is currently busy (Rate Limit hit). Please wait 60 seconds and try again."
+        else:
+            logger.error(f"Execution error: {e}")
+            result = f"Error: {str(e)}"
 
-
-@app.post("/query-pdf")
-async def query_pdf_endpoint(question: str = Form(...)):
-    if not pdf_agent or pdf_agent.index is None:
-        raise HTTPException(status_code=400, detail="No PDF has been processed yet. Please upload a document first.")
-
-    answer = pdf_agent.query_pdf(question)
-    return {"answer": answer}
+    return {"agent": display_name, "result": result}

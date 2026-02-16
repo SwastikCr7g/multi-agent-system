@@ -1,33 +1,55 @@
-# app/agents/arxiv_agent.py
 import feedparser
 import urllib.parse
-import google.generativeai as genai
+import logging
+
+logger = logging.getLogger("AgentSystemLogger")
 
 
 class ArxivAgent:
-    def __init__(self, llm_instance): # CORRECTED: Must take llm_instance
-        self.llm = llm_instance
+    def __init__(self, client, model):
+        self.client = client
+        self.model = model
         self.base_url = "http://export.arxiv.org/api/query?"
-        print("ArxivAgent initialized.")
 
     def fetch_papers(self, query: str, max_results: int = 3) -> str:
-        """Fetches recent ArXiv papers and summarizes them with the LLM."""
+        """Fetches and summarizes recent academic research papers."""
         try:
-            search_query = urllib.parse.quote_plus(query)
-            query_params = f"search_query=all:{search_query}&sortBy=submittedDate&start=0&max_results={max_results}"
-            feed = feedparser.parse(self.base_url + query_params)
+            # Properly encode the query for the URL
+            encoded_query = urllib.parse.quote(query)
+            params = f"search_query=all:{encoded_query}&max_results={max_results}&sortBy=relevance"
+
+            feed = feedparser.parse(self.base_url + params)
 
             if not feed.entries:
-                return "No recent academic papers found on ArXiv."
+                return "No academic papers were found on ArXiv matching your research query."
 
-            context_string = "\n---\n".join([
-                f"Paper: {e.title}\nAbstract: {e.summary[:300]}..."
-                for e in feed.entries
-            ])
+            # Prepare paper abstracts for synthesis
+            paper_summaries = []
+            for entry in feed.entries:
+                # Limit summary length to save tokens while keeping core info
+                clean_summary = entry.summary.replace('\n', ' ')[:500]
+                paper_summaries.append(f"TITLE: {entry.title}\nABSTRACT: {clean_summary}...")
 
-            prompt = f"Summarize these recent academic findings based on the abstracts for the query: {query}\n\n{context_string}"
-            response = self.llm.generate_content(prompt)
-            return response.text
+            context = "\n\n---\n\n".join(paper_summaries)
+
+            prompt = f"""
+            SYSTEM: You are an academic research assistant. 
+            Summarize the following ArXiv research papers related to the user's query.
+            Highlight the core findings and methodology.
+
+            --- RESEARCH DATA ---
+            {context}
+
+            --- RESEARCH QUERY ---
+            {query}
+            """
+
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt
+            )
+            return response.text.strip()
 
         except Exception as e:
-            return f"ArxivAgent failed due to network error: {str(e)}"
+            logger.error(f"Arxiv Error: {e}")
+            return f"The Research portal (ArXiv) is temporarily unavailable: {str(e)}"

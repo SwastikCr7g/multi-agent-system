@@ -2,5 +2,7 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/fastapi-multi-agent-final" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/multi_agent_ai_system_final" vcs="Git" />
   </component>
 </project>
